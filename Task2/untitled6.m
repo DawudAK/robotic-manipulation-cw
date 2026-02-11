@@ -1,0 +1,1 @@
+robot_fk_slow_relative(S, deg2rad([ 0 5 0 0 ]), 4);
