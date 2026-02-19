@@ -19,8 +19,11 @@ function funcs = RobotDriver()
     funcs.gripper   = @set_gripper;
     funcs.raw_ticks = @read_raw_ticks;
     funcs.close     = @close_robot;
+
+    funcs.get_xyz = @get_xyz;
     funcs.move_ik   = @move_to_xyz;
     funcs.move_cubic = @move_joint_cubic;
+    funcs.move_linear= @move_linear;
     % ====================================================================
     %                  USER CONFIGURATION (EDIT THIS!)
     % ====================================================================
@@ -44,7 +47,7 @@ function funcs = RobotDriver()
     S.params.h  = 0.077;
     S.params.L1 = hypot(v_sh, x_sh);
     S.params.L2 = 0.124;
-    S.params.Le = 0.1025; % Your grasp center
+    S.params.Le = 0.126; % Your grasp center
     S.params.delta = atan2(x_sh, v_sh);
     S.params.deltaSign = -1;
 
@@ -125,6 +128,7 @@ function funcs = RobotDriver()
     function move_robot(q_rad)
         % q_rad: [q1, q2, q3, q4] in radians relative to home
         if length(q_rad) < 4, error('Input must be 4 angles (rad)'); end
+
         
         for i = 1:4
             % 1. Convert Rad -> Ticks
@@ -139,6 +143,9 @@ function funcs = RobotDriver()
             % 4. Write
             write4ByteTxRx(port_num, 2.0, S.JointIDs(i), ADDR_GOAL_POSITION, goal_pos);
         end
+
+        % --- NEW: TRANSMIT ALL IN ONE BURST ---
+        %groupSyncWriteTxPacket(S.group_write_num);
     end
 
     % ====================================================================
@@ -171,53 +178,93 @@ function funcs = RobotDriver()
     %                          Cubic Motion
     % ====================================================================
     function success = move_joint_cubic(target_p, phi, T_total)
-        % Moves to XYZ using Joint-Space Cubic Interpolation
-        % T_total: Time in seconds for the move
         success = false;
-        N = 50; % Number of steps. 50 is usually plenty for 2 seconds.
-        dt = T_total / N;
-
-        % 1. Get Current Position (Start)
-        q_start = read_robot(); % Relative radians
+        
+        % 1. Get Current Angles
+        q_start = read_robot(); 
         th_home = [0, (pi/2 + S.params.delta), -pi/2, 0];
-        th_start = q_start + th_home; % Convert to Absolute Math angles
-
-        % 2. Solve IK for Goal (End)
-        % Clamp target first
+        th_start = q_start + th_home; 
+        
+        % 2. Auto-Timing Brain
+        if nargin < 3 || isempty(T_total)
+            current_p = get_xyz();
+            distance = norm(target_p - current_p);
+            cruise_speed = 0.1; % 10 cm/s
+            T_total = max(0.5, distance / cruise_speed);
+        end
+        
+        % 3. Dynamic Slicing (~20ms per step)
+        dt_target = 0.02; % 50 Hz
+        N = max(10, round(T_total / dt_target)); 
+        dt = T_total / (N-1);
+        % 4. Solve IK for Goal
         p = target_p;
         p(1) = max(S.X_LIM(1), min(S.X_LIM(2), p(1)));
         p(2) = max(S.Y_LIM(1), min(S.Y_LIM(2), p(2)));
         p(3) = max(S.Z_LIM(1), min(S.Z_LIM(2), p(3)));
         
         [th_goal, ok, ~] = ik_pos_only_between_jaws(p, phi, -1, S.params);
-        
         if ~ok
-            warning('Cubic move failed: Goal unreachable.');
-            return;
+            warning('Cubic move failed: Goal unreachable.'); return;
         end
-
-        % 3. Loop through Cubic Interpolation
-        fprintf('Starting Cubic Move (%.1fs)...\n', T_total);
-        tic;
+        
+        % 5. Execute Move
+        fprintf('Curved Move to [%.2f, %.2f, %.2f] (%.1fs)...\n', p(1), p(2), p(3), T_total);
+        startTime = tic;
         for k = 1:N
             tau = (k-1)/(N-1);
-            s = 3*tau^2 - 2*tau^3; % Cubic scaling factor
+            s = 3*tau^2 - 2*tau^3; 
             
-            % Interpolate Absolute angles
             th_interp = (1-s)*th_start + s*th_goal;
+            move_robot(th_interp - th_home);
             
-            % Convert back to Relative for the motors
-            q_cmd = th_interp - th_home;
-            
-            % Send command
-            move_robot(q_cmd);
-            
-            % Maintain timing
-            while toc < k*dt
-                % wait
-            end
+            while toc(startTime) < (k-1)*dt; end % Precision wait
         end
-        fprintf('Move Complete.\n');
+        success = true;
+    end
+    % ====================================================================
+    %             Cartesian Linear Motion (Straight & Precise)
+    % ====================================================================
+    function success = move_linear(target_p, phi, T_total)
+        success = false;
+        
+        % 1. Get Current Position
+        current_p = get_xyz();
+        
+        % 2. Auto-Timing Brain (Slightly slower cruise speed for precision)
+        if nargin < 3 || isempty(T_total)
+            distance = norm(target_p - current_p);
+            cruise_speed = 0.10; % 10 cm/s for straight lines
+            T_total = max(0.5, distance / cruise_speed);
+        end
+        
+        % 3. Dynamic Slicing
+        dt_target = 0.02; 
+        N = max(10, round(T_total / dt_target)); 
+        dt = T_total / (N-1); 
+        
+        % 4. Execute Cartesian Move
+        th_home = [0, (pi/2 + S.params.delta), -pi/2, 0];
+        fprintf('Linear Move to [%.2f, %.2f, %.2f] (%.1fs)...\n', target_p(1), target_p(2), target_p(3), T_total);
+        
+        startTime = tic;
+        for k = 1:N
+            tau = (k-1)/(N-1);
+            s = 3*tau^2 - 2*tau^3; 
+            
+            % Interpolate XYZ distance directly
+            p_interp = (1-s)*current_p + s*target_p;
+            
+            % Solve IK for this specific millimeter
+            [th_step, ok, ~] = ik_pos_only_between_jaws(p_interp, phi, -1, S.params);
+            if ~ok
+                warning('Linear move failed: Path broken at step %d', k); return;
+            end
+            
+            move_robot(th_step - th_home);
+            
+            while toc(startTime) < (k-1)*dt; end % Precision wait
+        end
         success = true;
     end
     % ====================================================================
@@ -234,7 +281,24 @@ function funcs = RobotDriver()
             q(i) = (diff * pi / 2048) * S.Dirs(i);
         end
     end
-
+     % ====================================================================
+    %                    READ CURRENT POSITION
+    % ====================================================================
+    function p = get_xyz()
+        % Reads current angles and uses FK to return [X, Y, Z]
+        q_current = read_robot();
+        th_home = [0, (pi/2 + S.params.delta), -pi/2, 0];
+        th_eff = q_current + th_home;
+        
+        % Forward Kinematics
+        th_eff(2) = th_eff(2) + S.params.deltaSign * S.params.delta;
+        r = S.params.L1*cos(th_eff(2)) + S.params.L2*cos(th_eff(2)+th_eff(3)) + S.params.Le*cos(th_eff(2)+th_eff(3)+th_eff(4));
+        z = S.params.h + S.params.L1*sin(th_eff(2)) + S.params.L2*sin(th_eff(2)+th_eff(3)) + S.params.Le*sin(th_eff(2)+th_eff(3)+th_eff(4));
+        x = r * cos(th_eff(1));
+        y = r * sin(th_eff(1));
+        
+        p = [x, y, z];
+    end
     % ====================================================================
     %                    READ RAW TICKS (For Calibration)
     % ====================================================================
@@ -263,8 +327,8 @@ function funcs = RobotDriver()
     function set_gripper(isOpen)
         % Open/Close Gripper
         % NOTE: Tune these values for your specific gripper!
-        OPEN_POS = 2500;   % <--- TUNE ME
-        CLOSE_POS = 1500;  % <--- TUNE ME
+        OPEN_POS = 4095;   % <--- TUNE ME 
+        CLOSE_POS = 0;  % <--- TUNE ME
         
         goal = CLOSE_POS;
         if isOpen, goal = OPEN_POS; end
