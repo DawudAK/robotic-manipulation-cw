@@ -12,7 +12,8 @@ function funcs = RobotDriver_sync();
     funcs.move_ik     = @move_to_xyz;
     funcs.move_cubic  = @move_joint_cubic;
     funcs.move_linear = @move_linear;
-
+    funcs.torque_joint =@set_torque_joint;
+    funcs.set_comp = @set_shoulder_comp;
     % Setting up the device / library
     S.DeviceName = 'COM9';       
     S.BaudRate   = 1000000;
@@ -32,7 +33,7 @@ function funcs = RobotDriver_sync();
     S.X_LIM = [-0.005, 0.273];
     S.Y_LIM = [-0.239, 0.239];
     S.Z_LIM = [0.03, 0.325]; % measure in downward position, what the actual limit is as limits change based on orientation
-
+    S.shoulder_comp = 0.0 * (pi/180);
     
     ADDR_TORQUE_ENABLE    = 64;
     ADDR_GOAL_POSITION    = 116;
@@ -87,12 +88,18 @@ function funcs = RobotDriver_sync();
         success = true;
     end
 
+
+    function set_shoulder_comp(deg)
+    S.shoulder_comp = deg * (pi/180);
+    fprintf('[Driver] Shoulder comp set to %.1f degrees\n', deg);
+    end
     % sync write
     function move_robot(q_rad)
 
     if numel(q_rad) < 4
         error('Input must be 4 joint angles');
     end
+    q_rad(2) = q_rad(2) + S.shoulder_comp;
 
     temp_write_num = groupSyncWrite(port_num, 2.0, ADDR_GOAL_POSITION, 4);
 
@@ -124,7 +131,7 @@ end
             q(i) = (diff * pi / 2048) * S.Dirs(i);
         end
     end
-
+    
     % first implementation of inverse to check if it works - works!
     function success = move_to_xyz(p, phi)
         success = false;
@@ -151,10 +158,10 @@ end
         if nargin < 3 || isempty(T_total)
             current_p = get_xyz();
             d = norm(target_p - current_p);
-            T_total = max(0.5, d/0.15);
+            T_total = max(1, d/0.1); % if not specifying a time for movement, min 1s for movement , or at 10 cm/s 
         end
         
-        dt_target = 0.02; % change to 0.02?
+        dt_target = 0.02; % change to 0.02? 50Hz
         N = max(10, round(T_total/dt_target));
         dt = T_total/(N-1);
         
@@ -164,7 +171,21 @@ end
         p(3) = max(S.Z_LIM(1), min(S.Z_LIM(2), p(3)));
         
         [th_goal, ok] = ik_pos_only_between_jaws(p, phi, -1, S.params);
-        if ~ok, return; end
+        if ~ok, 
+            phi_deg = phi * (180/pi);
+    
+    % 2. Print the expanded warning in RED
+            fprintf(2, '\n!!! KINEMATIC ERROR !!!\n');
+            fprintf(2, 'Target Position: [%.3f, %.3f, %.3f] meters\n', p(1), p(2), p(3));
+            fprintf(2, 'Requested Angle: %.1f degrees\n', phi_deg);
+    
+    % 3. The Safety Freeze
+            disp('Check the robot. Press ANY KEY to kill the script safely.');
+            pause; 
+    
+    % 4. The "Software E-Stop"
+            error('Script terminated: Impossible geometry detected.'); 
+        end
         
         
         t0 = tic;
@@ -186,7 +207,7 @@ end
         
         if nargin < 3 || isempty(T_total)
             d = norm(target_p - p0);
-            T_total = max(0.5, d/0.10);
+            T_total = max(1, d/0.10);
         end
         
         dt_target = 0.02;
@@ -201,7 +222,21 @@ end
             p = (1-s)*p0 + s*target_p;
             
             [th, ok] = ik_pos_only_between_jaws(p, phi, -1, S.params);
-            if ~ok, return; end
+            if ~ok, 
+            phi_deg = phi * (180/pi);
+    
+    % 2. Print the expanded warning in RED
+            fprintf(2, '\n!!! KINEMATIC ERROR !!!\n');
+            fprintf(2, 'Target Position: [%.3f, %.3f, %.3f] meters\n', p(1), p(2), p(3));
+            fprintf(2, 'Requested Angle: %.1f degrees\n', phi_deg);
+    
+    % 3. The Safety Freeze
+            disp('Check the robot. Press ANY KEY to kill the script safely.');
+            pause; 
+    
+    % 4. The "Software E-Stop"
+            error('Script terminated: Impossible geometry detected.'); 
+        end
             
             move_robot(th - th_home);
             while toc(t0) < (k-1)*dt; end
@@ -242,10 +277,14 @@ end
             write1ByteTxRx(port_num, 2.0, id, ADDR_TORQUE_ENABLE, val);
         end
     end
+    function set_torque_joint(id,enable)
+        val = double(enable);
+        write1ByteTxRx(port_num, 2.0, id, ADDR_TORQUE_ENABLE, val);
+    end
 
     % open/close gripper
     function set_gripper(isOpen)
-        OPEN = 2000; CLOSE = 2400;
+        OPEN = 1995; CLOSE = 2387;
         goal = CLOSE;
         if isOpen, goal = OPEN; end
         
