@@ -6,7 +6,7 @@ else
     fprintf('[CONNECT] Using existing robot connection.\n');
 end
 
-do_slalom_task(r);
+do_slalom_task(robot);
 
 
 

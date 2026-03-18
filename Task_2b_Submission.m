@@ -6,8 +6,8 @@ else
     fprintf('[CONNECT] Using existing robot connection.\n');
 end
 
-r.torque(true);
-r.gripper(true);
+robot.torque(true);
+robot.gripper(true);
 
 
 box1_dest     = [-0.0029, 0.1271, 0.0487];
@@ -26,22 +26,22 @@ stack_pos1    = [0.076,  0.0012, 0.0608];
 stack_pos2    = [0.075, 0.0016, 0.080];
 
 
-rotate_block(r, box1_start_v1, box_1_rotate_end);
-rotate_block(r, box1_start_v1, box_1_rotate_end);
-rotate_block(r, box1_start_v1, box_1_rotate_end);
-rotate_block(r, box2_start,    box2_end);
-rotate_block(r, box2_start,    box2_end);
+rotate_block(robot, box1_start_v1, box_1_rotate_end);
+rotate_block(robot, box1_start_v1, box_1_rotate_end);
+rotate_block(robot, box1_start_v1, box_1_rotate_end);
+rotate_block(robot, box2_start,    box2_end);
+rotate_block(robot, box2_start,    box2_end);
 
 
-do_pick_and_place_v2(r, box1_start_v1, box1_dest_60, -pi/3, high_transit);
-r.move_cubic(high_transit, -pi/3);
-do_pick_and_place_v2(r, box2_start, box2_dest_60, -pi/3, high_transit);
+do_pick_and_place_v2(robot, box1_start_v1, box1_dest_60, -pi/3, high_transit);
+robot.move_cubic(high_transit, -pi/3);
+do_pick_and_place_v2(robot, box2_start, box2_dest_60, -pi/3, high_transit);
 
-do_bridge_task(r);
+do_bridge_task(robot);
 
 % Stacking
-do_pick_and_place_v2(r, box1_dest, stack_pos1, -pi/2);
-do_pick_and_place_v2(r, box2_dest, stack_pos2, -pi/2);
+do_pick_and_place_v2(robot, box1_dest, stack_pos1, -pi/2);
+do_pick_and_place_v2(robot, box2_dest, stack_pos2, -pi/2);
 
 
 function rotate_block(r, pick_xyz, drop_xyz)
@@ -138,4 +138,3 @@ function do_pick_and_place_v2(robot, pick_xyz, place_xyz, phi, via_xyz)
 
     robot.move_linear(hover_place, phi, 0.8); % was 1.0
 end
-
